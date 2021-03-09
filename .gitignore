@@ -48,3 +48,6 @@ Thumbs.db
 *.mov
 *.wmv
 
+.vscode/launch.json
+.vscode/settings.json
+.vscode/extensions.json
