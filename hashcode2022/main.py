@@ -2,8 +2,10 @@
 
 # Press Maiusc+F10 to execute it or replace it with your code.
 # Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
-from typing import List
+from typing import List, Dict
 import logging
+
+from docutils.parsers.rst.roles import role
 
 logging.basicConfig(level=logging.INFO)
 
@@ -26,6 +28,12 @@ class Contributor():
 		return self.available
 
 
+class Role():
+	def __init__(self, role_skill_name, role_skill_level):
+		self.role_skill_name = role_skill_name
+		self.role_skill_level = role_skill_level
+
+
 class Project():
 
 	def __init__(self, index, name, days_needed, score, best_before_day):
@@ -34,22 +42,12 @@ class Project():
 		self.days_needed = days_needed
 		self.score = score
 		self.best_before_day = best_before_day
-		self.roles = []
+		self.roles = {}
 		self.assignee = []
 		self.appetite = best_before_day
 
-	def addRoles(self, skill_name, skill_value):
-		self.roles.append((skill_name, skill_value))
-
-	def setAssignee(self, contributors):
-		[ass.setAvailable(False) for ass in contributors]
-		self.assignee = contributors
-		for idx, role in enumerate(self.roles):
-			role_skill_name = role[0]
-			role_skill_level = role[1]
-			current_skill_level = contributors[idx].skills.get(role_skill_name, 0)
-			if current_skill_level == role_skill_level or current_skill_level == (role_skill_level - 1):
-				contributors[idx].skills[role_skill_name] = current_skill_level + 1
+	def addRoles(self, index, role: Role):
+		self.roles[index] = role
 
 	def completeProject(self):
 		[ass.setAvailable(True) for ass in self.assignee]
@@ -117,47 +115,15 @@ def parse_input(letter):
 			lineSplit = line.split(' ')
 			skill_name = lineSplit[0]
 			skill_level = int(lineSplit[1])
-			project.addRoles(skill_name, skill_level)
+			project.addRoles(nr, Role(skill_name, skill_level))
 		projects.append(project)
 
 	return contributors, projects, skills
 
 
-# def is_available(contributor: Contributor):
-#     return contributor.available
-
-def is_satisfiable(project: Project, skills_contributors_map):
-	candidates = []
-	count = 0
-	num_roles = len(project.roles)
-	for role_skill, role_skill_level in project.roles:
-		for contributor in skills_contributors_map.get(role_skill,[]):
-			if contributor.isAvailable() and contributor not in candidates:
-				if contributor.skills.get(role_skill, 0) >= role_skill_level:
-					candidates.append(contributor)
-					count += 1
-					break
-				# Basic mentorship
-				elif contributor.skills.get(role_skill, 0) == (role_skill_level - 1):
-					isMentorFound = False
-					for candidate in candidates:
-						if candidate.skills.get(role_skill, 0) >= role_skill_level:
-							candidates.append(contributor)
-							count += 1
-							isMentorFound = True
-							break
-					if isMentorFound:
-						break
-	if count != num_roles:
-		# Could not find candidates with enough skills for all requested roles
-		return False
-
-	project.setAssignee(candidates)
-	return True
-
-
 class Evaluator:
-	def __init__(self, projects: List[Project], contributors: List[Contributor], sortProject, skills):
+	def __init__(self, projects: List[Project], contributors: List[Contributor], sortProject: bool,
+				 skills_contributors_map: Dict[str, List[Contributor]]):
 		if sortProject:
 			# To sort the list in place...
 			projects.sort(key=lambda x: x.appetite, reverse=False)
@@ -168,9 +134,85 @@ class Evaluator:
 		self.completed_projects: List[Project] = []
 		self.sortProject = sortProject
 		self.score = 0
-		self.skills_contributors_map = skills
+		self.skills_contributors_map = skills_contributors_map
 		self.total_projects = len(projects)
 		self.projects_added = 0
+
+	def isMentorAvailable(self, candidates: Dict[str, Contributor], role: Role, project: Project,
+						  checkProject=False) -> bool:
+		role_skill_name = role.role_skill_name
+		role_skill_level = role.role_skill_level
+		# First search in already assigned candidates
+		for rsn, candidate in candidates.items():
+			if candidate is not None and candidate.skills.get(role_skill_name, 0) >= role_skill_level:
+				return True
+		# Then try to remove one candidate
+		if checkProject:
+			for index, candidate in candidates.items():
+				if candidate is not None:
+					role_skill_name_2 = project.roles[index].role_skill_name
+					role_skill_level_2 = project.roles[index].role_skill_level
+					for contributor in self.skills_contributors_map.get(role_skill_name_2, []):
+						if contributor.isAvailable() and contributor is not candidate and contributor.skills.get(
+							role_skill_name_2, 0) >= role_skill_level_2 and contributor.skills.get(
+							role_skill_name, 0) >= role_skill_level:
+							candidates[index] = contributor
+							return True
+
+		return False
+
+	def setContributorsToProject(self, project: Project, contributors: Dict[str, Contributor]):
+		[ass.setAvailable(False) for ass in contributors.values()]
+		for index, role in project.roles.items():
+			role_skill_name = role.role_skill_name
+			role_skill_level = role.role_skill_level
+			project.assignee.append(contributors[index])
+			current_skill_level = contributors[index].skills.get(role_skill_name, 0)
+			if current_skill_level == role_skill_level or current_skill_level == (role_skill_level - 1):
+				contributors[index].skills[role_skill_name] = current_skill_level + 1
+
+	def is_satisfiable(self, project: Project):
+		candidates = {}
+		count = 0
+		num_roles = len(project.roles)
+		for index, role in project.roles.items():
+			role_skill_name = role.role_skill_name
+			role_skill_level = role.role_skill_level
+			candidates[index] = None
+			for contributor in self.skills_contributors_map.get(role_skill_name, []):
+				if contributor.isAvailable() and contributor not in candidates.values():
+					if contributor.skills.get(role_skill_name, 0) >= role_skill_level:
+						candidates[index] = contributor
+						count += 1
+						break
+					# Basic mentorship
+					elif contributor.skills.get(role_skill_name, 0) == (role_skill_level - 1):
+						if self.isMentorAvailable(candidates, role, project):
+							candidates[index] = contributor
+							count += 1
+							break
+
+		while count != num_roles:
+			isAtLeastOneNewContributorAdded = False
+			for index, candidate in candidates.items():
+				role_skill_name = project.roles[index].role_skill_name
+				role_skill_level = project.roles[index].role_skill_level
+				if candidate is None:
+					if self.isMentorAvailable(candidates, project.roles[index], project, True):
+						for contributor in self.skills_contributors_map.get(role_skill_name, []):
+							if contributor.isAvailable() and contributor not in candidates.values() and contributor.skills.get(
+									role_skill_name, 0) == (role_skill_level - 1):
+								candidates[index] = contributor
+								count += 1
+								isAtLeastOneNewContributorAdded = True
+								break
+
+			if not isAtLeastOneNewContributorAdded:
+				# No contributor could be added -> project unfeasible now
+				return False
+
+		self.setContributorsToProject(project, candidates)
+		return True
 
 	def pickNextProject(self) -> Project:
 		# Return project with contributors
@@ -179,13 +221,14 @@ class Evaluator:
 				# if it will never give points from now on, remove from list
 				self.projects.remove(project)
 				continue
-			if is_satisfiable(project, self.skills_contributors_map):
+			if self.is_satisfiable(project):
 				# logging.info("Project picked: %s", project.name)
 				# Project added, remove from pool of pickable
 				self.projects.remove(project)
 				return project
 
 	def loop(self):
+		last_percentage = 0
 		while (True):
 			logging.debug("Loop")
 			nextProject = self.pickNextProject()
@@ -194,10 +237,11 @@ class Evaluator:
 			# Select a project until is possible
 			if nextProject is not None:
 				self.projects_added += 1
-				percentage_of_projects_added = self.projects_added * 100 / self.total_projects
-				if percentage_of_projects_added % 20 == 0:
+				percentage_of_projects_added = int(self.projects_added * 100 / self.total_projects)
+				if percentage_of_projects_added >= last_percentage:
 					print(str(percentage_of_projects_added) + '%')
-				# set contributors not avail
+					# let's print something every 5% of projects
+					last_percentage += 5
 				# save time it ends
 				time_when_ends = self.t + nextProject.days_needed
 				self.in_progress_projects[nextProject] = time_when_ends
@@ -212,13 +256,12 @@ class Evaluator:
 				self.completed_projects.extend(projects_just_completed)
 				[k.completeProject() for k in projects_just_completed]
 				[self.in_progress_projects.pop(project, None) for project in projects_just_completed]
-				# remove ended project and free contributors and update skills
-				# logging.info("Completed projects: %s", ",".join([x.name for x in projects_just_completed]))
+			# remove ended project and free contributors and update skills
 
-				# # Update appetite
-				# if self.sortProject:
-				# 	[p.updateAppetite(self.t) for p in self.projects]
-				# 	self.projects.sort(key=lambda x: x.appetite, reverse=False)
+			# # Update appetite
+			# if self.sortProject:
+			# 	[p.updateAppetite(self.t) for p in self.projects]
+			# 	self.projects.sort(key=lambda x: x.appetite, reverse=False)
 
 			# If no project can be added and no one is ongoing, finish
 			else:
@@ -237,16 +280,11 @@ def write_output(letter, completed_projects):
 
 if __name__ == '__main__':
 	# letters = ['a', 'b', 'c', 'd', 'e', 'f']
-	letters = ['f']
+	letters = ['b']
 	for letter in letters:
 		contributors, projects, skills = parse_input(letter)
 		sortProject = True
 		evaluator = Evaluator(projects, contributors, sortProject, skills)
 		evaluator.loop()
-
-		# logging.info("Completed %d projects", len(evaluator.completed_projects))
-
-		# for p in evaluator.completed_projects:
-		# 	logging.info("%s: %s", p.name, ",".join([x.name for x in p.assignee]))
 
 		write_output(letter, evaluator.completed_projects)
