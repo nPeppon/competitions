@@ -2,10 +2,12 @@ from typing import List, Dict, Tuple, Set, Optional
 import os
 import random
 
-# TODO: 1 snake at a time
-# TODO: Order snakes by length
-# TODO: Retry init position N times
-# TODO: 
+# TODO: 1 snake at a time - DONE
+# TODO: Order snakes by length - DONE
+# TODO: Retry init position N times - DONE
+
+# NOTE: Two main issues - 1 wormhole per snake is allowed - wormhole counts for 2 moves
+random.seed(3)
 
 filenames = ['data\\00.txt',
              'data\\01.txt',
@@ -35,7 +37,7 @@ def parse_input(letter):
     # print('S ' + str(S))
 
     # print('Reading Second line')
-    line = f.readline()
+    line = f.readline().replace("\n", "")
     snakes = [ Snake(int(x), i) for i,x in enumerate(line.split(" "))]
     # for s in snakes:
     #     print(s.to_string()) 
@@ -67,23 +69,28 @@ class Snake:
         self.move_list = []
         self.current_position = (-1,-1)
         self.all_positions = []
+        # Only 1 wormhole per snake allowed
+        self.wormhole_used = False
 
     def increase_score(self, score: int):
         self.score += score
     
-    def add_move(self, move: str, coord: Tuple[int, int], score:int):
+    def add_move(self, move: str, coord: Tuple[int, int], score: str):
+        if len(move.split(' ')) == 4:
+            # wormhole counts for 2 moves
+            into_wormhole_move = move.split(' ')[0]
+            out_of_new_wormhole_move = ' '.join(move.split(' ')[1:])
+            self.move_list.append(into_wormhole_move)
+            move = out_of_new_wormhole_move
         self.move_list.append(move)
         self.current_position = coord
         self.all_positions.append((coord[0], coord[1], score))
-        
-    def current_position(self, position: Tuple[int, int]):
-        self.current_position = position
+        self.score += int(score)
+        if len(self.move_list) > 1 and move not in ['R', 'L', 'U', 'D']:
+            self.wormhole_used = True
         
     def to_string(self):
         return "Snake - Size: " + str(self.size)
-        
-    def kill_me(self):
-        self.size = 0
 
 class Evaluator:
     def __init__(self, C: int, R: int, S: int, snakes: List[Snake], matrix: Matrix):
@@ -114,31 +121,21 @@ class Evaluator:
             score = self.matrix.matrix[coord[0]][coord[1]]
             s.add_move(direction, coord, score)
             # replace the cell of matrix with a #
-            self.matrix.matrix[coord[0]][coord[1]] = "#" 
-            s.increase_score(int(score))
+            self.matrix.matrix[coord[0]][coord[1]] = "#"
 
-    def initialize_positions(self):
-        if R >= C:      
-            distance = int(R/S)
-            for i, s in enumerate(self.snakes):
-                tupla = (i*distance, 0)
-                self.add_move(s, tupla, str(tupla[1]) + " " + str(tupla[0]))
-        else:
-            distance = int(C/S)
-            for i, s in enumerate(self.snakes):
-                tupla = (0, i*distance)
-                self.add_move(s, tupla, str(tupla[1]) + " " + str(tupla[0]))
-    # initialize_random_positions
     def initialize_random_positions(self):
         for i, s in enumerate(self.snakes):
             self.initialize_random_position(s)
 
     def initialize_random_position(self, snake: Snake):
         tupla = (-1, -1)
-        while tupla == (-1, -1):
-            temp_tupla = (random.randint(0, R-1), random.randint(0, C-1))
-            if not self.matrix.matrix[temp_tupla[0]][temp_tupla[1]] == '#' and not self.matrix.matrix[temp_tupla[0]][temp_tupla[1]] == '*':
+        tentatives = 100
+        while tupla == (-1, -1) and tentatives > 0:
+            temp_tupla = (random.randint(0, self.R - 1), random.randint(0, self.C - 1))
+            value = self.matrix.matrix[temp_tupla[0]][temp_tupla[1]]
+            if not value == '#' and not value == '*' and int(value) >= 0:
                 tupla = temp_tupla
+            tentatives -= 1
         self.add_move(snake, tupla, str(tupla[1]) + " " + str(tupla[0]))
         
     def clean_snake(self, snake:Snake):
@@ -146,8 +143,9 @@ class Evaluator:
         for tupla in snake.all_positions:
             self.matrix.matrix[tupla[0]][tupla[1]] = tupla[2]
         snake.all_positions = []
+        snake.score = 0
         
-    def choose_next_move_for_snake(self, current_position: Tuple[int, int], is_wormohole:bool = False):
+    def choose_next_move_for_snake(self, current_position: Tuple[int, int], can_choose_woormhole:bool = True):
         best_direction = ''
         best_position = current_position
         best_score = -100001
@@ -159,13 +157,14 @@ class Evaluator:
             next_position = ((current_position[0] + p[0]) % self.R, (current_position[1] + p[1]) % self.C)
             next_score = self.matrix.matrix[next_position[0]][next_position[1]]
             if not next_score == "#":
-                if next_score == "*" and not is_wormohole:
+                if next_score == "*" and can_choose_woormhole:
                     for worm in self.matrix.wormholes:
-                        w_position, w_direction, w_score = self.choose_next_move_for_snake(worm, True)
-                        if w_score >= best_score:
+                        w_position, w_direction, w_score = self.choose_next_move_for_snake(worm, False)
+                        # Wormholes moves count as two moves -> score adjusted
+                        if w_score/2 >= best_score:
                             best_score = w_score
                             best_position = w_position
-                            best_direction = str(w_position[1]) + " " + str(w_position[0])
+                            best_direction = directions[_i] + " " + str(worm[1]) + " " + str(worm[0]) + " " + w_direction
                 elif not next_score == "*" and (int(next_score) >= best_score):
                     best_score = int(next_score)
                     best_position = next_position
@@ -203,17 +202,15 @@ class Evaluator:
 
     def run_one_snake_at_time(self):
         # reverse: True -> descending , False -> ascending
-        self.snakes.sort(
-            key=lambda x: x.size, reverse=True)
+        self.snakes.sort(key=lambda x: x.size, reverse=True)
         for i,snake in enumerate(self.snakes):
             self.printProgress(i)
             self.run_single_snake(snake)
-
         # reverse: True -> descending , False -> ascending
         self.snakes.sort(key=lambda x: x.id, reverse=False)
         print(self.to_string())
 
-    def run_single_snake(self, snake: Snake, retry_left: int = 10):
+    def run_single_snake(self, snake: Snake, retry_left: int = 900):
         retry_left -= 1
         if retry_left == -1:
             return
@@ -224,7 +221,10 @@ class Evaluator:
             self.run_single_snake(snake, retry_left)
             return
         while len(snake.move_list) < snake.size:
-            position, direction, score = self.choose_next_move_for_snake(snake.current_position)
+            can_choose_wormhole = True
+            if snake.wormhole_used or len(snake.move_list) > snake.size -2:
+                can_choose_wormhole = False
+            position, direction, score = self.choose_next_move_for_snake(snake.current_position, can_choose_wormhole)
             if direction == '.':
                 if retry_left == 0:
                     self.killed_no_move += 1
@@ -244,8 +244,10 @@ class Evaluator:
                     self.clean_snake(snake)
                     self.run_single_snake(snake, retry_left)
                     return
+            if len(snake.move_list) > snake.size:
+                print('Something is off')
     
-def write_output(letter, demons_fought: List[int]):
+def write_output(letter, snakes: List[Snake]):
     filename = '' + letter + '.txt'
     with open(filename, 'w') as out:
         for s in snakes:
@@ -253,9 +255,9 @@ def write_output(letter, demons_fought: List[int]):
 
 
 if __name__ == '__main__':
-    # letters = ['a', 'b', 'c', 'd', 'e', 'f']
+    letters = ['a', 'b', 'c', 'd', 'e', 'f']
     input_files = [0, 1, 2, 3, 4, 5, 6]
-    # input_files = [6]
+    # input_files = [1]
     for file in input_files:
         print('File: ' + str(file))
         C, R, S, snakes, matrix = parse_input(file)
